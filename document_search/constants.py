@@ -143,6 +143,7 @@ except ImportError:
 
 # Explicitly export all public attributes
 __all__ = [
+    "T",
     "EXCLUDED_DIRS",
     "DEFAULT_PATTERNS",
     "MIN_THREADS",

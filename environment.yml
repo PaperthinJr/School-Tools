@@ -59,4 +59,3 @@ dependencies:
       - types-requests==2.32.0.20250306
       - types-tqdm==4.67.0.20250301
       - urllib3==2.3.0
-prefix: C:\Users\liabi\anaconda3\envs\school_tools

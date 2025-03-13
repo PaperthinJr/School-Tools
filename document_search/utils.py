@@ -97,8 +97,8 @@ def sanitize_filename(filename: str, max_length: int = 50) -> str:
     """
     import re
 
-    # Replace problematic characters
-    sanitized = re.sub(r'[\\/*?:"<>|]', "_", filename)
+    # Replace problematic characters AND spaces
+    sanitized = re.sub(r'[\\/*?:"<>|\s]', "_", filename)
 
     # Truncate if needed
     if len(sanitized) > max_length:
