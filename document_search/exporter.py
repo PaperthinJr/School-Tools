@@ -16,6 +16,7 @@ workflow from search execution to result presentation and persistence.
 
 import datetime
 import html
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -24,13 +25,16 @@ from .models import SearchMatch
 from .utils import sanitize_filename, wrap_text
 
 
+def get_exe_directory() -> Optional[Path]:
+    """Returns the directory where the .exe is located, or None if running as a Python script."""
+    if getattr(sys, "frozen", False):  # Running as PyInstaller .exe
+        return Path(sys.executable).parent.resolve()
+    return None  # Running as a normal Python package
+
+
 class ResultExporter:
     """
     Export search results to various document formats.
-
-    Transforms SearchMatch objects into readable documents with highlighted matches
-    in formats including HTML, Markdown, and plain text. Handles proper formatting,
-    file path generation, and text sanitization.
     """
 
     def __init__(self, search_term: str, directory: Path):
@@ -44,12 +48,16 @@ class ResultExporter:
         self.search_term = search_term
         self.directory = directory.resolve()
         self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.script_dir = Path(__file__).parent.resolve()
         self.formatted_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Set once
+
+        # If running as an .exe, export to the .exe directory; otherwise, use the script directory
+        exe_directory = get_exe_directory()
+        self.export_dir = exe_directory if exe_directory else Path(__file__).parent.resolve()
 
     def _get_export_path(self, extension: str) -> Path:
         """
-        Generate export file path with appropriate extension and sanitized filename.
+        Generate export file path inside the .exe directory if running as .exe,
+        or inside the script directory if running normally.
 
         Args:
             extension: File extension without leading dot (e.g., 'html')
@@ -58,62 +66,138 @@ class ResultExporter:
             Path object for the output file
         """
         sanitized_term = sanitize_filename(self.search_term, max_length=30)
-        return self.script_dir / f"search_{sanitized_term}_{self.timestamp}.{extension}"
+        return self.export_dir / f"export_{sanitized_term}_{self.timestamp}.{extension}"
 
     def export_html(self, results: list[SearchMatch]) -> Path:
-        """
-        Export results to HTML with match highlighting and formatted structure.
-
-        Args:
-            results: List of search match objects
-
-        Returns:
-            Path to the exported HTML file
-        """
         output_path = self._get_export_path("html")
-
         with output_path.open("w", encoding="utf-8") as f:
             f.write(
                 f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Search Results: {html.escape(self.search_term)}</title>
-    <style>
-        mark {{ background-color: yellow; }}
-        body {{ font-family: Arial, sans-serif; margin: 2em; }}
-        h2 {{ margin-top: 1.5em; color: #2c3e50; }}
-    </style>
-</head>
-<body>
-    <h1>Search Results</h1>
-    <p><strong>Search Term:</strong> {html.escape(self.search_term)}</p>
-    <p><strong>Directory:</strong> {html.escape(str(self.directory))}</p>
-    <p><strong>Date:</strong> {self.formatted_date}</p>
-    <hr>
-"""
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Search Results: {html.escape(self.search_term)}</title>
+        <style>
+            :root {{
+                --bg: #0d1117;
+                --text: #c9d1d9;
+                --accent: #58a6ff;
+                --surface: #161b22;
+                --border: #30363d;
+                --highlight: #1f6feb;
+            }}
+            * {{
+                box-sizing: border-box;
+                scroll-behavior: smooth;
+            }}
+            body {{
+                background: var(--bg);
+                color: var(--text);
+                font-family: system-ui, -apple-system, sans-serif;
+                line-height: 1.6;
+                margin: 0;
+                padding: 2rem;
+                max-width: 1200px;
+                margin: 0 auto;
+            }}
+            h1, h2, h3 {{
+                color: #fff;
+                margin-top: 1.5em;
+            }}
+            .header {{
+                top: 0;
+                background: var(--bg);
+                padding: 1rem 0;
+                border-bottom: 1px solid var(--border);
+                z-index: 100;
+            }}
+            .result-file {{
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 1.5rem;
+                margin: 1rem 0;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }}
+            mark {{
+                background-color: var(--highlight);
+                color: #fff;
+                padding: 0.2em 0.4em;
+                border-radius: 3px;
+            }}
+            .top-btn {{
+                position: fixed;
+                bottom: 2rem;
+                right: 2rem;
+                background: var(--accent);
+                color: #fff;
+                border: none;
+                border-radius: 50%;
+                width: 50px;
+                height: 50px;
+                cursor: pointer;
+                opacity: 0.8;
+                transition: opacity 0.3s;
+            }}
+            .top-btn:hover {{
+                opacity: 1;
+            }}
+            .meta {{
+                display: grid;
+                gap: 0.5rem;
+                background: var(--surface);
+                padding: 1rem;
+                border-radius: 6px;
+                margin: 1rem 0;
+            }}
+            code {{
+                font-family: 'Consolas', monospace;
+                background: #1b1f24;
+                padding: 0.2em 0.4em;
+                border-radius: 3px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Search Results</h1>
+        </div>
+        <div class="meta">
+            <div><strong>Search Term:</strong> {html.escape(self.search_term)}</div>
+            <div><strong>Directory:</strong> {html.escape(str(self.directory))}</div>
+            <div><strong>Date:</strong> {self.formatted_date}</div>
+        </div>
+    """
             )
 
             current_file = None
             for result in results:
-                file_path = Path(result.file_path)  # Ensure consistent handling of paths
+                file_path = Path(result.file_path)
                 if current_file != file_path:
-                    f.write(f"<h2>{html.escape(str(file_path))}</h2>\n")
+                    if current_file is not None:
+                        f.write("</div>\n")  # Close previous result-file div
+                    f.write(f'<div class="result-file"><h2>{html.escape(str(file_path))}</h2>\n')
                     current_file = file_path
 
                 f.write(f"<h3>{html.escape(result.page_or_section or '')}</h3>\n")
-
                 context_html = html.escape(result.context)
                 for start, end in sorted(result.match_positions, reverse=True):
                     match_text = html.escape(result.context[start:end])
                     context_html = (
                         f"{context_html[:start]}<mark>{match_text}</mark>{context_html[end:]}"
                     )
+                f.write(f"<p><code>{context_html}</code></p>\n")  # Removed </div>
 
-                f.write(f"<p>{context_html}</p>\n")
+            if current_file is not None:
+                f.write("</div>\n")  # Close last result-file div
 
-            f.write("</body>\n</html>")
-
+            f.write(
+                """
+        <button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" class="top-btn">↑</button>
+    </body>
+    </html>"""
+            )
         return output_path
 
     def export_markdown(self, results: list[SearchMatch]) -> Path:

@@ -10,6 +10,7 @@ The module serves as the main entry point for the interactive mode of the docume
 and coordinates with other components like the searcher and exporter modules.
 """
 
+import sys
 import time
 from pathlib import Path
 from typing import Any, Collection, Dict, List, Optional, Union
@@ -17,6 +18,7 @@ from typing import Any, Collection, Dict, List, Optional, Union
 from .constants import DEFAULT_PATTERNS, EXCLUDED_DIRS, EXPORT_FORMATS, MAX_THREADS, MIN_THREADS
 from .exporter import ResultExporter
 from .models import SearchMatch
+from .searcher import execute_search
 
 
 def get_user_input(
@@ -49,47 +51,47 @@ def get_user_input(
         return user_input
 
 
-def interactive_menu() -> Dict[str, Any]:
+def interactive_menu(pre_selected_directory: Path = None) -> Dict[str, Any]:
     """
     Display an interactive menu to configure search parameters.
 
-    Walks the user through configuring all search parameters including directory selection,
-    search options, file types, and result export preferences.
-
-    Returns:
-        A dictionary of configured search parameters
+    If a directory is pre-selected (from exe.py), it skips directory selection.
     """
     print("\n===== Interactive Document Search Tool =====\n")
 
-    # Get search term
+    # Prompt for the search term regardless of directory selection
     search_term = input("Enter the word or pattern to search for: ").strip()
     while not search_term:
         search_term = input("Search term cannot be empty. Please enter a search term: ").strip()
 
-    # Get directory
-    script_dir = Path(__file__).parent.resolve()
-    cwd = Path.cwd().resolve()
-
-    print("\nDirectory options:")
-    print(f"1. Script location: {script_dir}")
-    print(f"2. Current working directory: {cwd}")
-    print("3. Enter a custom path")
-
-    choice = get_user_input(
-        "Select directory option (1-3, default: 1):", default="1", valid_options={"1", "2", "3"}
-    )
-
-    if choice == "1":
-        directory = script_dir
-    elif choice == "2":
-        directory = cwd
+    # Determine the directory
+    if pre_selected_directory:
+        print(f"📂 Using pre-selected directory: {pre_selected_directory}")
+        directory = pre_selected_directory
     else:
-        directory = Path(input("Enter directory path: ").strip()).resolve()
+        script_dir = Path(__file__).parent.resolve()
+        cwd = Path.cwd().resolve()
 
-    while not directory.exists() or not directory.is_dir():
-        directory = Path(
-            input("Invalid directory. Enter a valid directory path: ").strip()
-        ).resolve()
+        print("\nDirectory options:")
+        print(f"1. Script location: {script_dir}")
+        print(f"2. Current working directory: {cwd}")
+        print("3. Enter a custom path")
+
+        choice = get_user_input(
+            "Select directory option (1-3, default: 1):", default="1", valid_options={"1", "2", "3"}
+        )
+
+        if choice == "1":
+            directory = script_dir
+        elif choice == "2":
+            directory = cwd
+        else:
+            directory = Path(input("Enter directory path: ").strip()).resolve()
+
+        while not directory.exists() or not directory.is_dir():
+            directory = Path(
+                input("Invalid directory. Enter a valid directory path: ").strip()
+            ).resolve()
 
     print(f"Search will be performed in: {directory}")
 
@@ -233,19 +235,27 @@ def interactive_main() -> None:
     """
     Main entry point for the interactive search mode.
 
-    Handles the complete workflow of gathering search parameters, executing the search,
-    displaying results, and optionally exporting them to the selected format.
+    Uses a pre-selected directory if provided (from exe.py).
     """
-    search_params = interactive_menu()
+    pre_selected_directory = None
+
+    # Check if a directory was passed from exe.py
+    if len(sys.argv) > 2 and sys.argv[1] == "--directory":
+        pre_selected_directory = Path(sys.argv[2]).resolve()
+
+    # Call interactive menu with optional pre-selected directory
+    search_params = interactive_menu(pre_selected_directory)
+
     start_time = time.time()
-
-    # Use the common search execution function
-    from .searcher import execute_search
-
     results = execute_search(search_params)
 
-    # Display detailed interactive results
-    display_results(results)
+    # Display results
+    if results:
+        print(
+            f"\nFound {len(results)} matches in {len({match.file_path for match in results})} documents."
+        )
+    else:
+        print("\nNo matches found.")
 
     # Export results if requested
     if search_params["export_format"] and results:

@@ -8,13 +8,15 @@ including both CLI and interactive modes, as well as exporting the results.
 
 __version__ = "1.0.0"  # Update version as needed
 
-from .main import main as cli_main, run_search
-from .interactive import interactive_main
-from .searcher import execute_search, WordSearcher
+from .constants import DEFAULT_PATTERNS, EXCLUDED_DIRS, EXPORT_FORMATS, MAX_WORKERS
 from .exporter import ResultExporter
+from .interactive import interactive_main
+from .main import main as cli_main
+from .main import run_search
 from .models import SearchMatch
-from .constants import EXCLUDED_DIRS, DEFAULT_PATTERNS, EXPORT_FORMATS, MAX_WORKERS
-from .utils import highlight_text, wrap_text, sanitize_filename, is_valid_directory
+from .searcher import WordSearcher, execute_search
+from .utils import highlight_text, is_valid_directory, sanitize_filename, wrap_text
+
 
 __all__ = [
     "__version__",
