@@ -61,10 +61,10 @@ CI Integration (GitHub Actions):
             run: |
               pip install toml pyyaml ruff black mypy bandit
           - name: Run code quality checks
-            run: python core/utils/code_quality.py --check --ci-output
+            run: python tests_core/utils/code_quality.py --check --ci-output
 
 Library usage:
-    from core.utils.code_quality import run_ruff, run_black, run_parallel_checks
+    from tests_core.utils.code_quality import run_ruff, run_black, run_parallel_checks
 
     # Run individual tools
     run_ruff()
@@ -96,44 +96,15 @@ from typing import Any, Optional, TypedDict
 # Configuration for optional dependencies
 # Set these flags to False if you want to disable a specific configuration source
 USE_TOML_CONFIG: bool = False  # Controls pyproject.toml configuration parsing
+USE_REQUIREMENTS_CONFIG: bool = False  # Controls requirements.txt configuration parsing
 USE_YAML_CONFIG: bool = False  # Controls environment.yml configuration parsing
 
-# Type aliases for improved readability
+# Type aliases for better code readability
 CommandArguments = list[str]  # Command-line arguments for tools
 ConfigurationDict = dict[str, Any]  # Configuration from project files
 CommandResult = tuple[int, str]  # Exit code and output from command execution
 
-
-class Environment(TypedDict):
-    """Environment information for reporting and CI detection."""
-
-    ci: bool  # Whether running in a CI environment
-    python_version: str  # Current Python version
-
-
-class Summary(TypedDict):
-    """Overall summary of all check results."""
-
-    success: bool  # True if all checks passed
-
-
-class ToolResult(TypedDict, total=False):
-    """Results from running an individual code quality tool."""
-
-    success: bool  # Whether the tool executed successfully
-    exit_code: int  # The tool's exit code
-    check_mode: bool  # Whether the tool was run in check-only mode
-
-
-class CheckResults(TypedDict):
-    """Complete results from all code quality checks."""
-
-    tools: dict[str, ToolResult]  # Results from individual tools
-    timestamp: str  # When the checks were run
-    environment: Environment  # Information about the runtime environment
-    summary: Summary  # Overall success/failure status
-
-
+# Tool-specific default configurations
 # Get the current Python version formatted as expected by Black
 PYTHON_VERSION: str = f"py{sys.version_info.major}{sys.version_info.minor}"
 
@@ -169,6 +140,49 @@ BANDIT_ARGS: CommandArguments = [
 
 # Required tools for the script to function
 REQUIRED_TOOLS = ["ruff", "black", "mypy", "bandit"]
+
+# Global variables - initialized later in initialize_environment()
+project_root_path: Optional[Path] = None
+log_filepath: Optional[Path] = None
+log_filename: Optional[str] = None
+is_ci: Optional[bool] = None
+logger: Optional[logging.Logger] = None
+
+
+# =================================
+# TYPE DEFINITIONS
+# =================================
+
+
+class Environment(TypedDict):
+    """Environment information for reporting and CI detection."""
+
+    ci: bool  # Whether running in a CI environment
+    python_version: str  # Current Python version
+
+
+class Summary(TypedDict):
+    """Overall summary of all check results."""
+
+    success: bool  # True if all checks passed
+
+
+class ToolResult(TypedDict, total=False):
+    """Results from running an individual code quality tool."""
+
+    success: bool  # Whether the tool executed successfully
+    exit_code: int  # The tool's exit code
+    check_mode: bool  # Whether the tool was run in check-only mode
+
+
+class CheckResults(TypedDict):
+    """Complete results from all code quality checks."""
+
+    tools: dict[str, ToolResult]  # Results from individual tools
+    timestamp: str  # When the checks were run
+    environment: Environment  # Information about the runtime environment
+    summary: Summary  # Overall success/failure status
+
 
 # =================================
 # ENVIRONMENT DETECTION
@@ -234,12 +248,14 @@ def find_project_root() -> Path:
 
     The function traverses upward from the current directory, looking for
     common project indicator files like .git, pyproject.toml, etc.
-    This helps ensure tools run from the correct base directory.
+
+    If no indicators are found, defaults to the directory containing this script.
 
     Returns:
         Path: The path to the identified project root directory.
     """
     current_directory_path: Path = Path.cwd()
+    script_directory: Path = Path(__file__).parent.absolute()
     project_indicator_files: set[str] = {
         ".git",
         ".gitignore",
@@ -249,58 +265,52 @@ def find_project_root() -> Path:
     }
 
     # Walk upwards until we find a marker file or hit the filesystem root
-    while (
-        not any(
-            (current_directory_path / indicator_file).exists()
-            for indicator_file in project_indicator_files
-        )
-        and current_directory_path != current_directory_path.parent
-    ):
+    while current_directory_path != current_directory_path.parent:
+        dir_name = current_directory_path.name
+        structure_file = f"{dir_name} Structure.txt"
+
+        # Add dynamic structure file name to the indicator files for this directory
+        current_indicators = project_indicator_files.copy()
+        current_indicators.add(structure_file)
+
+        # Check if any indicator exists
+        if any((current_directory_path / indicator).exists() for indicator in current_indicators):
+            return current_directory_path
+
+        # Move up to parent directory
         current_directory_path = current_directory_path.parent
 
-    return current_directory_path
-
-
-# Setup logging for the module
-project_root_path: Path = find_project_root()
-log_filename: str = f"code_quality_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-log_filepath: Path = project_root_path / log_filename
-
-# Configure logging based on environment - simplified format for CI systems
-is_ci = is_ci_environment()
-log_format = (
-    "%(levelname)s: %(message)s"
-    if is_ci
-    else "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=log_format,
-    handlers=[logging.FileHandler(log_filepath), logging.StreamHandler(sys.stdout)],
-)
-logger: logging.Logger = logging.getLogger(__name__)
+    # If no indicators found, return the script's directory
+    return script_directory
 
 
 def read_project_config() -> ConfigurationDict:
     """Read and parse project configuration from available config files.
 
-    Checks for and reads configuration from:
+    Reads configuration data from enabled configuration sources:
     - pyproject.toml (if USE_TOML_CONFIG is True)
-    - requirements.txt
+    - requirements.txt (if USE_REQUIREMENTS_CONFIG is True)
     - environment.yml (if USE_YAML_CONFIG is True)
+
+    All file path logging uses debug level to reduce verbosity.
+    Only warnings and errors are logged at higher levels.
 
     Returns:
         ConfigurationDict: Dictionary containing merged configuration from all sources
     """
-    project_directory: Path = find_project_root()
-    requirements_file_path: Path = project_directory / "requirements.txt"
+    # Use the global project root path instead of finding it again
+    project_directory: Path = project_root_path
+
+    # Initialize empty config dictionary
     project_config: ConfigurationDict = {}
 
     # Read from pyproject.toml if it exists and is enabled
     if USE_TOML_CONFIG:
         pyproject_config_path: Path = project_directory / "pyproject.toml"
+        logger.debug(f"Looking for pyproject.toml at: {pyproject_config_path.absolute()}")
+
         if pyproject_config_path.exists():
+            logger.debug(f"Found pyproject.toml at: {pyproject_config_path.absolute()}")
             try:
                 try:
                     import toml  # type: ignore
@@ -311,26 +321,34 @@ def read_project_config() -> ConfigurationDict:
             except Exception as toml_error:
                 logger.warning(f"Failed to read pyproject.toml: {toml_error}")
 
-    # Read from requirements.txt if it exists
-    if requirements_file_path.exists():
-        try:
-            with open(requirements_file_path) as requirements_file:
-                requirement_lines: list[str] = requirements_file.read().splitlines()
-                project_config["dependencies"] = requirement_lines
-        except Exception as requirements_error:
-            logger.warning(f"Failed to read requirements.txt: {requirements_error}")
+    # Read from requirements.txt if it exists and is enabled
+    if USE_REQUIREMENTS_CONFIG:
+        requirements_file_path: Path = project_directory / "requirements.txt"
+        logger.debug(f"Looking for requirements.txt at: {requirements_file_path.absolute()}")
+
+        if requirements_file_path.exists():
+            logger.debug(f"Found requirements.txt at: {requirements_file_path.absolute()}")
+            try:
+                with open(requirements_file_path, encoding="utf-8") as requirements_file:
+                    requirement_lines: list[str] = requirements_file.read().splitlines()
+                    project_config["dependencies"] = requirement_lines
+            except Exception as requirements_error:
+                logger.warning(f"Failed to read requirements.txt: {requirements_error}")
 
     # Read from environment.yml if it exists and is enabled
     if USE_YAML_CONFIG:
         environment_config_path: Path = project_directory / "environment.yml"
+        logger.debug(f"Looking for environment.yml at: {environment_config_path.absolute()}")
+
         if environment_config_path.exists():
+            logger.debug(f"Found environment.yml at: {environment_config_path.absolute()}")
             try:
                 try:
                     import yaml  # type: ignore
                 except ImportError:
                     logger.warning("pyyaml package not installed. Unable to read environment.yml.")
                 else:
-                    with open(environment_config_path) as environment_file:
+                    with open(environment_config_path, encoding="utf-8") as environment_file:
                         environment_yaml: dict[str, Any] = yaml.safe_load(environment_file)
                         if "dependencies" in environment_yaml:
                             project_config["dependencies"] = environment_yaml["dependencies"]
@@ -381,7 +399,7 @@ def get_black_args(project_config: ConfigurationDict) -> CommandArguments:
     if "tool" in project_config and "black" in project_config["tool"]:
         black_config_section: dict[str, Any] = project_config["tool"]["black"]
 
-        # Handle line-length by filtering out existing settings
+        # Handle line-length by filtering out existing tests_settings
         if "line-length" in black_config_section:
             filtered_args = []
             skip_next = False
@@ -396,7 +414,7 @@ def get_black_args(project_config: ConfigurationDict) -> CommandArguments:
             black_command_args = filtered_args
             black_command_args.extend(["--line-length", str(black_config_section["line-length"])])
 
-        # Handle target-version by filtering out existing settings
+        # Handle target-version by filtering out existing tests_settings
         if "target-version" in black_config_section:
             filtered_args = []
             skip_next = False
@@ -486,6 +504,11 @@ def run_ruff() -> int:
     ruff_exit_code: int
     ruff_output: str
     ruff_exit_code, ruff_output = run_command(["ruff"] + ruff_command_args, "Ruff", [0, 1])
+
+    # Add newline before output if it contains actual issues
+    if ruff_output.strip() and (ruff_exit_code != 0 or ":" in ruff_output):
+        ruff_output = "\n" + ruff_output
+
     logger.info(ruff_output)
 
     # Exit code 1 from Ruff means it found and fixed issues, not a failure
@@ -498,7 +521,7 @@ def run_black(
     """Run Black code formatter with specified options.
 
     Executes the Black code formatter with configuration from the project
-    settings or defaults. Can run in check-only mode to verify formatting
+    tests_settings or defaults. Can run in check-only mode to verify formatting
     without making changes, or in diff mode to show proposed changes.
 
     Args:
@@ -525,6 +548,9 @@ def run_black(
     black_exit_code: int
     black_output: str
     black_exit_code, black_output = run_command(black_command, "Black (Code Formatting)", [0, 1])
+
+    if black_output.strip() and (black_exit_code != 0 or "reformatted" in black_output):
+        black_output = "\n" + black_output
 
     logger.info(black_output)
 
@@ -554,6 +580,10 @@ def run_mypy() -> int:
     mypy_exit_code: int
     mypy_output: str
     mypy_exit_code, mypy_output = run_command(["mypy"] + MYPY_ARGS, "Mypy")
+
+    if mypy_output.strip() and (mypy_exit_code != 0 or "error:" in mypy_output):
+        mypy_output = "\n" + mypy_output
+
     logger.info(mypy_output)
     return mypy_exit_code
 
@@ -572,7 +602,11 @@ def run_bandit() -> int:
     bandit_output: str
     bandit_exit_code, bandit_output = run_command(["bandit"] + BANDIT_ARGS, "Bandit")
 
+    if bandit_output.strip() and (bandit_exit_code != 0 or "errors" in bandit_output):
+        bandit_output = "\n" + bandit_output
+
     logger.info(bandit_output)
+
     return bandit_exit_code
 
 
@@ -636,11 +670,15 @@ def run_all_checks(
     Returns:
         CheckResults: Dictionary containing results of all checks and metadata
     """
+    # Format timestamp in a more human-readable format
+    current_time = datetime.now()
+    formatted_timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
     check_results: CheckResults = {
         "tools": {},
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": formatted_timestamp,
         "environment": {
-            "ci": is_ci,
+            "ci": is_ci if is_ci is not None else False,
             "python_version": PYTHON_VERSION,
         },
         "summary": {"success": True},
@@ -684,12 +722,52 @@ def run_all_checks(
     return check_results
 
 
+def initialize_environment():
+    """Initialize global variables after all functions are defined."""
+    global project_root_path, log_filepath, log_filename, is_ci, logger
+
+    # Now we can call the functions that are defined later in the file
+    project_root_path = find_project_root()
+    log_filename = f"code_quality_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_filepath = project_root_path / log_filename
+
+    # Print this immediately to stdout before any other operations
+    print(f"Project root found at: {project_root_path.absolute()}")
+    print(f"Log file will be saved to: {log_filepath.absolute()}")
+
+    # Configure logging
+    is_ci = is_ci_environment()
+    log_format = (
+        "%(levelname)s: %(message)s"
+        if is_ci
+        else "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=log_format,
+        handlers=[logging.FileHandler(log_filepath), logging.StreamHandler(sys.stdout)],
+    )
+    logger = logging.getLogger(__name__)
+
+    # Log to file as well
+    logger.info(f"Project root found at: {project_root_path.absolute()}")
+    logger.info(f"Log file saved to: {log_filepath.absolute()}")
+
+
+initialize_environment()
+
+
 # =================================
 # COMMAND-LINE INTERFACE & PARSING
 # =================================
 
 if __name__ == "__main__":
     import argparse
+
+    # Log where the script is running from
+    print(f"Script running from: {Path(__file__).absolute()}")
+    print(f"Current working directory: {Path.cwd().absolute()}")
 
     # Set up command-line argument parsing
     argument_parser: argparse.ArgumentParser = argparse.ArgumentParser(
